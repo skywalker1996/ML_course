@@ -3,6 +3,7 @@ import numpy as np
 import csv
 import os
 import matplotlib.pyplot as plt
+import tensorflow as tf
 # a = tf.constant(3.0, dtype = tf.float32)
 # b = tf.constant(4.0, dtype = tf.float32)
 # c = a + b
@@ -93,61 +94,112 @@ def bias_variable(shape):
 	return tf.Variable(initial)
 
 def conv_relu(inputs, kernal_shape, bias_shape):
-	weights = tf.get_variable("weights", shape = kernal_shape, initializer = tf.truncated_normal(kernal_shape, stddev = 0.1))
-	bias = tf.get_variable("bias", shape = bias_shape, initializer = tf.constant(0.1, shape = kernal_shape))
+	weights = tf.get_variable("weights",  initializer = tf.truncated_normal(kernal_shape, stddev = 0.1))
+	tf.summary.histogram('weights',weights)
+	bias = tf.get_variable("bias", initializer = tf.constant(0.1, shape = bias_shape))
+	tf.summary.histogram("bias",bias)
 	conv = tf.nn.conv2d(inputs, weights, strides = [1,1,1,1], padding = "SAME")
 	return tf.nn.relu(conv + bias)
 
 def full_connected(inputs, w_shape, b_shape):
-	weights = tf.get_variable("weights", shape = w_shape, initializer = tf.truncated_normal(shape, stddev = 0.1))
-	bias = tf.get_variable("bias", shape = b_shape, initializer = tf.constant(0.1, shape = b_shape))
+	weights = tf.get_variable("weights", initializer = tf.truncated_normal(w_shape, stddev = 0.1))
+	bias = tf.get_variable("bias", initializer = tf.constant(0.1, shape = b_shape))
+	tf.summary.histogram("weights",weights)
+	tf.summary.histogram("bias", bias)
 	fc = tf.matmul(inputs, weights)+bias
 	return fc
 
 
-def max_pool_2x2(X):
-	return tf.nn.max_pool(X, ksize = [1,2,2,1], strides = [1,2,2,1], padding = "SAME")
+def max_pool(X, window_size, strides):
+	return tf.nn.max_pool(X, ksize = [1,window_size,window_size,1], strides = [1,strides,strides,1], padding = "VALID")
 
 
 
 
-def image_filter(X, keep_prob = 1.0):
+def image_filter(X, keep_prob):
 
 	with tf.variable_scope("conv1"):
-		# 48*48*1 --> 44*44*8
-		conv_1 = conv_relu(X, kernal_shape = [5,5,1,8], bias_shape = [8])   
-		#44*44*8 --> 22*22*8
-		conv_1_pool = max_pool_2x2(conv_1)
+
+		conv_1 = conv_relu(X, kernal_shape = [1,1,1,32], bias_shape = [32])   
+		#conv_1_pool = max_pool_2x2(conv_1)  
 
 	with tf.variable_scope("conv2"):
-		#22*22*8 --> 18*18*8
-		conv_2 = conv_relu(conv_1_pool, kernal_shape = [5,5,8,8], bias_shape = [8])
-		#18*18*8 --> 9*9*8
-		conv_2_pool = max_pool_2x2(conv_2)
+
+		conv_2 = conv_relu(conv_1, kernal_shape = [5,5,32,32], bias_shape = [32])
+		conv_2_pool = max_pool(conv_2, 3, 2)  #23
+
+	with tf.variable_scope("conv3"):
+	
+		conv_3 = conv_relu(conv_2_pool, kernal_shape = [3,3,32,32], bias_shape = [32])	
+		conv_3_pool = max_pool(conv_3, 3, 2)  #11
+
+
+	with tf.variable_scope("conv4"):
+	
+		conv_4 = conv_relu(conv_3_pool, kernal_shape = [5,5,32,64], bias_shape = [64])	
+		conv_4_pool = max_pool(conv_4, 3, 2)  #5
 
 	with tf.variable_scope("fc1"):
-		conv_2_flat = tf.reshape(conv_2_pool, [-1, 9*9*8])
-		fc1 = tf.nn.relu(full_connected(conv_2_flat, w_shape = [9*9*8, 256], b_shape = [256]))
+		conv_4_flat = tf.reshape(conv_4_pool, [-1, 5*5*64])
+		fc1 = tf.nn.relu(full_connected(conv_4_flat, w_shape = [5*5*64,1024], b_shape = [1024]))
 		fc1_drop = tf.nn.dropout(fc1, keep_prob)
 
 	with tf.variable_scope("fc2"):
-		fc2 = tf.nn.softmax(full_connected(fc1_drop, w_shape = [256, 10], b_shape = [10]))
+		fc2 = tf.nn.relu(full_connected(fc1_drop, w_shape = [1024, 128], b_shape = [128]))
+		fc2_drop = tf.nn.dropout(fc2, keep_prob)
 
-	y_conv = fc2
+	with tf.variable_scope("output"):
+		y_conv = tf.nn.softmax(full_connected(fc2_drop, w_shape = [128, 7], b_shape = [7]))
+
 	return y_conv
 
 
 
 #load data
 train_x, train_y, test_x = loadDataSet("Data")
+train_x, train_y = shuffle(train_x, train_y)
 train_x = train_x.reshape((-1, 48, 48))
 test_x = test_x.reshape((-1, 48, 48))
 
+print(train_x.shape)
 #normalize 
-train_x = train_x / 255
-test_x = test_x / 255
+train_x = train_x / 255.0
+test_x = test_x / 255.0
 
+# train_x = train_x[0 : int(train_x.shape[0]*0.8)]
+# valid_x = train_x[int(train_x.shape[0]):]
 
+x = tf.placeholder("float", shape = [None,48,48])
+y = tf.placeholder("float", shape = [None, 7])
+keep_prob = tf.placeholder("float")
+
+x_image = tf.reshape(x, [-1, 48, 48, 1])
+y_conv = image_filter(x_image, keep_prob = keep_prob)
+
+cross_entropy = -tf.reduce_mean(y*tf.log(y_conv))
+tf.summary.scalar("loss", cross_entropy)
+train_step = tf.train.AdamOptimizer(1e-4).minimize(cross_entropy)
+y_pred = tf.argmax(y_conv,1)
+prediction_comp = tf.equal(tf.argmax(y_conv,1), tf.argmax(y,1))
+accuracy = tf.reduce_mean(tf.cast(prediction_comp, "float"))
+
+sess = tf.Session()
+
+writer = tf.summary.FileWriter("log/", sess.graph)
+sess.run(tf.initialize_all_variables())
+
+valid_x = train_x[27200:28709]
+valid_y = train_y[27200:28709]
+
+for epoch in range(50):
+	for i in range(850):
+		batch_x = train_x[i*32:(i+1)*32]
+		batch_y = train_y[i*32:(i+1)*32]
+		_, acc = sess.run((train_step, accuracy), feed_dict = {x:batch_x, y:batch_y, keep_prob: 0.5})
+	
+	acc, rs =  sess.run((accuracy,  tf.summary.merge_all()), feed_dict = {x:valid_x, y:valid_y, keep_prob:1.0})
+	writer.add_summary(rs,epoch)
+	print(acc)
 
 
 
